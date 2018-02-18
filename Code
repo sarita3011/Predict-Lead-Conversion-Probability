@@ -1,0 +1,120 @@
+setwd("~/McKinsey Hackathon/train_5ZizJYZ")
+library(tidyverse)
+library(randomForest)
+library(lubridate)
+# Import Data
+train <- read.csv('train.csv', stringsAsFactors = FALSE)
+test <- read.csv('test.csv', stringsAsFactors = FALSE)
+str(train)
+
+# Combine test and train for data cleaning
+full <- rbind(train[,1:21],test)
+
+# convert to factors
+train$Approved <- as.factor(train$Approved)
+col_list = c('Gender','City_Category','Employer_Category1','Employer_Category2','Primary_Bank_Type',
+             'Contacted','Source_Category','Var1')
+full[col_list] <- lapply(full[col_list],function(x) as.factor(x))
+levels(full$City_Category)[1] = "D"
+
+# calculate age using date of birth
+full$Lead_Creation_Date <-  dmy(full$Lead_Creation_Date)
+full$Lead_Month <- month(full$Lead_Creation_Date)
+full$Lead_Wday <- wday(full$Lead_Creation_Date,label = TRUE)
+full$DOB <- ymd((format(as.Date(full$DOB, format = '%d/%m/%y'),"19%y-%m-%d")))
+full$Age <- year(full$Lead_Creation_Date) - year(full$DOB)
+full[is.na(full$Age),'Age'] <- mean(full$Age, na.rm = TRUE)
+
+
+levels(full$Employer_Category1)[1] <- "D"  # created new level because almost all values missing in category2
+full[is.na(full$Employer_Category1),'Employer_Category1'] <- "D"
+levels(full$Employer_Category2)[5] <- "5"
+full[is.na(full$Employer_Category2),'Employer_Category2'] <- 5
+
+# replaced outlying income
+full[full$ID == 'APPJ70184404909','Monthly_Income'] <- 12010013
+
+# create new columns with suffix _None to indicate whether values are missing
+levels(full$Primary_Bank_Type)[1] <- "A"
+col_list <- c('Existing_EMI', 'Loan_Amount', 'Loan_Period','Interest_Rate', 'EMI')
+for (i in col_list)
+{
+full <- full %>% mutate(i = case_when(
+  is.na(get(i)) ~ 1,
+  !is.na(get(i)) ~ 0 ))
+full$i <- as.factor(full$i)
+names(full)[length(names(full))] <- paste(i,'_None',sep = "")
+}
+
+# replace missing values with outlying numbers
+full[is.na(full$Existing_EMI),'Existing_EMI'] <- -999
+full[is.na(full$Loan_Amount),'Loan_Amount'] <- -999
+full[is.na(full$Loan_Period),'Loan_Period'] <- -999
+full[is.na(full$Interest_Rate),'Interest_Rate'] <- -999
+full[is.na(full$EMI),'EMI'] <- -999
+full$Lead_Month <- as.factor(full$Lead_Month)
+
+train1 <- cbind(full[1:69713,],Approved = train[,22])
+test1 <- full[69714:99750,]
+train1[train1$City_Code2=="", 'City_Code2'] = 10001
+test1[test1$City_Code2=="", 'City_Code2'] = 10001
+
+
+# create feature lead week number
+
+train2 <- train1 %>% mutate(Lead_Mday = mday(train1$Lead_Creation_Date))
+train2 <- train2 %>% mutate(Lead_Wnbr = ceiling(mday(train2$Lead_Creation_Date)/7))
+train2$Lead_Wnbr <- as.factor(train2$Lead_Wnbr)
+
+test2 <- test1 %>% mutate(Lead_Mday = mday(test1$Lead_Creation_Date))
+test2 <- test2 %>% mutate(Lead_Wnbr = ceiling(mday(test2$Lead_Creation_Date)/7))
+test2$Lead_Wnbr <- as.factor(test2$Lead_Wnbr)
+
+# new feature
+
+Primary_Bank_Code_1 <- train2 %>% filter(Approved == 1) %>%  
+  select(Customer_Existing_Primary_Bank_Code) %>% 
+  group_by(Customer_Existing_Primary_Bank_Code) %>% summarise(p = n()/1020)
+
+train2 <- merge(train2, Primary_Bank_Code_1, by = "Customer_Existing_Primary_Bank_Code", all.x = TRUE)
+test2 <- merge(test2, Primary_Bank_Code_1, by = "Customer_Existing_Primary_Bank_Code", all.x = TRUE)
+train2[is.na(train2$p),'p'] <- 0
+test2[is.na(test2$p),'p'] <- 0
+
+# handle missing values in Soure variable
+test2$Source[test2$Source == "S126"|test2$Source == "S142" | test2$Source == "S131"| test2$Source == "S132"] <- "S122"
+test2 <- test2 %>% mutate(Source_2 = substr(test2$Source,2,4))
+train2 <- train2 %>% mutate(Source_2 = substr(train2$Source,2,4))
+
+# new feature - age category
+
+train2 <- train2 %>% mutate(Age_Cat = case_when(
+  Age < 20 ~ 1,
+  Age >=20 & Age < 45 ~ 2,
+  Age >= 45  ~ 3 ))
+train2$Age_Cat <- as.factor(train2$Age_Cat)
+
+test2 <- test2 %>% mutate(Age_Cat = case_when(
+  Age < 20 ~ 1,
+  Age >=20 & Age < 45 ~ 2,
+  Age >= 45  ~ 3 ))
+test2$Age_Cat <- as.factor(test2$Age_Cat)
+
+
+# model fitting
+
+mod_rf <- randomForest(Approved ~ Gender + Monthly_Income + Primary_Bank_Type + Source_Category +
+                         Existing_EMI + Loan_Amount + Loan_Period + Interest_Rate + EMI + 
+                         Var1 + Lead_Month + Lead_Wday + Age + Existing_EMI_None + Loan_Amount_None +
+                         Interest_Rate_None + EMI_None + Employer_Category1 + Employer_Category2 + 
+                         City_Category + City_Code2 + Lead_Wnbr + p + Source_2 + Age_Cat ,train2)
+
+pred <- predict(mod_rf,test2, type = "prob")
+out <- cbind(test2$ID,pred[,2])
+colnames(out) <- c("ID","Approved")
+write.csv(out, "submit2.csv", row.names = FALSE)
+
+# get variable importance from random forest
+
+imp    <- importance(mod_rf)
+var_imp <- data.frame(Variables = row.names(imp),Importance = round(imp[ ,'MeanDecreaseGini']))
