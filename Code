@@ -1,10 +1,10 @@
-setwd("~/McKinsey Hackathon/train_5ZizJYZ")
 library(tidyverse)
 library(randomForest)
 library(lubridate)
+
 # Import Data
-train <- read.csv('train.csv', stringsAsFactors = FALSE)
-test <- read.csv('test.csv', stringsAsFactors = FALSE)
+train <- read.csv("https://raw.githubusercontent.com/sarita3011/Predict-Lead-Conversion-Probability/master/train.csv", stringsAsFactors = FALSE)
+test <- read.csv("https://raw.githubusercontent.com/sarita3011/Predict-Lead-Conversion-Probability/master/test.csv", stringsAsFactors = FALSE)
 str(train)
 
 # Combine test and train for data cleaning
@@ -118,3 +118,4 @@ write.csv(out, "submit2.csv", row.names = FALSE)
 
 imp    <- importance(mod_rf)
 var_imp <- data.frame(Variables = row.names(imp),Importance = round(imp[ ,'MeanDecreaseGini']))
+
